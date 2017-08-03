@@ -1,6 +1,23 @@
 import AdvancedHTMLParser as AdvancedHTMLParser
 import urllib
 
+from datetime import datetime
+from pymongo import MongoClient
+
+
+def insertToDb(collection, document):
+    if (collection.find({"_id": document['_id']}).count() == 0):
+        print(collection.insert_one(document).inserted_id + " has been inserted to db")
+    else:
+        old = collection.find_one({"_id": document['_id']})
+        # merge older versions with new one
+        old_versions = old.get('versions')
+        old_versions.update(document.get('versions'))
+        # merge older links with new one
+        old_links = old.get('links')
+        old_links.update(document.get('links'))
+        print(str(collection.update({"_id": document['_id']}, {"$set": {"versions":old_versions, "links":old_links}}, upsert=True)) + " id: " + str(document.get('_id')))
+
 
 def crawl(address):
     response = urllib.urlopen(address)
@@ -14,55 +31,66 @@ def crawl(address):
     links = package_class[0][3]
 
     link_dic = {}
-    link_dic[address] = {}
 
     for i in range(1, len(links.children), 3):
-        link_dic[address][links[i - 1].text] = links[i].__getattribute__('href')
+        link_dic[links[i - 1].text] = links[i].__getattribute__('href')
 
     wiki_address = package_class[0][4][0].__getattribute__('href')
     package_version_class = html_parser.getElementsByClassName('package-versions-list')
-    version_dic = {}
-    version_dic[address] = []
 
-    for i in range(len(package_version_class[0].children)):
-        version_dic[address] += [{}]
-        package_version_header_class = package_version_class[0][i].getElementsByClassName("package-version-header")
-        version = package_version_header_class[0][0].text.split()
+    version_dic = {}
+
+    for package_version in package_version_class[0].children:
+        package_version_header_class = package_version.getElementsByClassName("package-version-header")
+        version = str(package_version_header_class[0][0].text.split()[1])
         added_on = package_version_header_class[0].text.split()
 
+        version = version.replace('.', '_')
         n = len(added_on[5])
         added_on[5] = added_on[5][0: n - 1]
-        added_on = str(added_on[4]) + "-" + str(added_on[5]) + "-" + str(added_on[6])
+        added_on = str(added_on[4]) + " " + str(added_on[5]) + " " + str(added_on[6])
+        added_on = datetime.strptime(added_on, '%b %d %Y')
 
         # TODO addedOn split
-        package_version_permission_class = package_version_class[0][i].getElementsByClassName(
+        package_version_permission_class = package_version.getElementsByClassName(
             "package-version-permissions")
         permission_list = []
         for j in range(len(package_version_permission_class[0][1].children)):
             permission_list += [package_version_permission_class[0][1][j].text.split()[0]]
 
-        package_version_source = package_version_class[0][i].getElementsByClassName("package-version-source")
+        package_version_source = package_version.getElementsByClassName("package-version-source")
         source_tarball = package_version_source[0][0].__getattribute__('href')
-        package_version_download = package_version_class[0][i].getElementsByClassName("package-version-download")
+        package_version_download = package_version.getElementsByClassName("package-version-download")
         apk_address = package_version_download[0][0].__getattribute__('href')
         pgp_signature = package_version_download[0][1].__getattribute__('href')
-        package_version_requirement = package_version_class[0][i].getElementsByClassName("package-version-requirement")
+        package_version_requirement = package_version.getElementsByClassName("package-version-requirement")
         requirement_version = package_version_requirement[0].text.split()[4]
+        requirement_version = requirement_version.replace('.', '_')
 
-        version_dic[address][i]['version'] = version
-        version_dic[address][i]['addedOn'] = added_on
-        version_dic[address][i]['permissionsList'] = permission_list
-        version_dic[address][i]['sourceTarball'] = source_tarball
-        version_dic[address][i]['apkAddress'] = apk_address
-        version_dic[address][i]['pgpSignature'] = pgp_signature
-        version_dic[address][i]['requirementVersion'] = requirement_version
+        version_dic[version] = {}
+        version_dic[version]['version'] = version
+        version_dic[version]['addedOn'] = added_on
+        version_dic[version]['permissionsList'] = permission_list
+        version_dic[version]['sourceTarball'] = source_tarball
+        version_dic[version]['apkAddress'] = apk_address
+        version_dic[version]['pgpSignature'] = pgp_signature
+        version_dic[version]['requirementVersion'] = requirement_version
 
-    return link_dic, wiki_address, version_dic
+    document = {'_id': address.split('/')[-1], 'links': link_dic, 'versions': version_dic}
+    return document
 
 
 main_url = 'https://f-droid.org/'
 
 parser = AdvancedHTMLParser.AdvancedHTMLParser()
+
+# database connection
+# login information can be passed to MongoClient
+print("Waiting for mongodb connection")
+client = MongoClient()
+print("MongoClient connected successfully")
+db = client.fdroid
+apps = db.apps
 
 response = urllib.urlopen(main_url + '/packages/')
 html = response.read()
@@ -81,5 +109,5 @@ for page in range(1, pageCount + 1):
     package_header_class = post_content_class.getElementsByClassName("package-header")
     url_size = len(package_header_class)
     for i in range(url_size):
-        crawl(main_url + package_header_class[i].__getattribute__('href'))
-        # TODO saving the output in a data set
+        document = crawl(main_url + package_header_class[i].__getattribute__('href'))
+        insertToDb(apps, document)
