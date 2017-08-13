@@ -74,6 +74,7 @@ def get_version_info(package_version_class):
         version_dic[version]['apkAddress'] = apk_address
         version_dic[version]['pgpSignature'] = pgp_signature
         version_dic[version]['requirementVersion'] = required_version
+    return version_dic
 
 
 def crawl(address):
